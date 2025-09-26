@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>棋连杀阵 H5版</title>
+    <meta name="description" content="精致的中国传统棋类游戏H5版，支持AI对战和双人对战">
+    <meta name="keywords" content="棋连杀阵,中国象棋,策略游戏,H5游戏,Canvas游戏">
+    <script>
+        // 自动重定向到游戏页面
+        window.location.href = './qilian.html';
+    </script>
+    <style>
+        body {
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            color: white;
+        }
+        .loading {
+            text-align: center;
+        }
+        .loading h1 {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+        }
+        .loading p {
+            font-size: 1.2rem;
+            opacity: 0.8;
+        }
+        .spinner {
+            border: 3px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top: 3px solid white;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="loading">
+        <h1>🎮 棋连杀阵</h1>
+        <div class="spinner"></div>
+        <p>正在加载游戏...</p>
+        <p style="font-size: 0.9rem; margin-top: 20px;">
+            如果没有自动跳转，请<a href="./qilian.html" style="color: #FFD700;">点击这里</a>
+        </p>
+    </div>
+</body>
+</html>

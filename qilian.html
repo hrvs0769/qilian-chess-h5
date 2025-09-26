@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>棋连杀阵 H5版</title>
+    <meta name="description" content="精致的中国传统棋类游戏H5版，支持AI对战和双人对战">
+    <meta name="keywords" content="棋连杀阵,中国象棋,策略游戏,H5游戏,Canvas游戏">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        }
+        #game-container {
+            width: 100vw;
+            height: 100vh;
+            max-width: 450px; /* 限制最大宽度以适应桌面浏览器 */
+            max-height: 800px; /* 限制最大高度 */
+            overflow: hidden;
+            position: relative;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background-color: #C48655;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <script type="module">
+        //-----------------------------------------
+        // 1. 游戏配置 (移植自 GameConfig.js)
+        //-----------------------------------------
+        const GameConfig = {
+            board: {
+                width: 314,
+                height: 470,
+                cellSize: 76,
+                gap: 2,
+                radius: 5,
+                colors: {
+                    background: '#6D4625',
+                    cellNormal: '#EFBB7F',
+                    cellSelected: '#C49660',
+                    cellHighlighted: '#66F9B5'
+                }
+            },
+            timer: {
+                colors: {
+                    normal: '#FFFFFF',
+                    warning: '#FF0000'
+                },
+                fontSize: 16,
+                warningThreshold: 5,
+                initialTime: 30
+            },
+            rules: [
+                "1. 开局随机决定先手方，双方轮流移动棋子",
+                "2. 只能移动到相邻空位",
+                "3. 击杀逻辑：",
+                "   形成己方棋子连线可消灭相邻对方棋子",
+                "   若敌方棋子后方有对方棋子时无法被击杀",
+                "4. 胜利条件：",
+                "   超时未操作判为负，对方胜",
+                "   任意一方剩余1子判为负，对方胜",
+                "5. 每回合有30秒思考时间",
+                "6. 时间耗尽一方判为负，对方胜",
+            ]
+        };
+
+        //-----------------------------------------
+        // 2. 棋盘状态管理器 (移植自 BoardStateManager.js)
+        //-----------------------------------------
+        class BoardStateManager {
+            constructor() {
+                this.state = {
+                    selectedCell: null,
+                    highlightedCells: [],
+                    cells: Array(24).fill().map((_, index) => ({
+                        index,
+                        isSelected: false,
+                        isHighlighted: false
+                    }))
+                };
+                this.adjacencyMap = {
+                    0:[1,4],1:[0,2,5],2:[1,3,6],3:[2,7],4:[0,5,8],5:[1,4,6,9],6:[2,5,7,10],7:[3,6,11],8:[4,9,12],9:[5,8,10,13],10:[6,9,11,14],11:[7,10,15],12:[8,13,16],13:[9,12,14,17],14:[10,13,15,18],15:[11,14,19],16:[12,17,20],17:[13,16,18,21],18:[14,17,19,22],19:[15,18,23],20:[16,21],21:[17,20,22],22:[18,21,23],23:[19,22]
+                };
+                this.directions = { horizontal: 'horizontal', vertical: 'vertical' };
+            }
+
+            getState() { return { ...this.state }; }
+            updateCell(index, properties) { this.state.cells[index] = { ...this.state.cells[index], ...properties }; }
+            resetHighlight() {
+                this.state.highlightedCells = [];
+                this.state.cells.forEach(cell => cell.isHighlighted = false);
+            }
+            getDirection(index1, index2) {
+                const row1 = Math.floor(index1 / 4), col1 = index1 % 4;
+                const row2 = Math.floor(index2 / 4), col2 = index2 % 4;
+                if (row1 === row2) return this.directions.horizontal;
+                if (col1 === col2) return this.directions.vertical;
+                return null;
+            }
+            areAdjacent(index1, index2) { return this.adjacencyMap[index1]?.includes(index2); }
+            getCellsInDirection(startIndex, direction) {
+                const row = Math.floor(startIndex / 4), col = startIndex % 4;
+                let cells = [];
+                if (direction === this.directions.horizontal) {
+                    for (let i = 0; i < 4; i++) cells.push(row * 4 + i);
+                } else if (direction === this.directions.vertical) {
+                    for (let i = 0; i < 6; i++) cells.push(i * 4 + col);
+                }
+                return cells;
+            }
+            findLineFormation(pieces, movedPieceIndex, playerType) {
+                const lines = [];
+                [this.directions.horizontal, this.directions.vertical].forEach(direction => {
+                    const cellsInDirection = this.getCellsInDirection(movedPieceIndex, direction);
+                    const playerPieces = cellsInDirection.filter(index => pieces.find(p => p.index === index)?.type === playerType);
+                    if (playerPieces.length >= 2) {
+                        playerPieces.sort((a, b) => a - b);
+                        let currentLine = [playerPieces[0]];
+                        for (let i = 1; i < playerPieces.length; i++) {
+                            if (this.areAdjacent(currentLine[currentLine.length - 1], playerPieces[i])) {
+                                currentLine.push(playerPieces[i]);
+                            } else {
+                                if (currentLine.length >= 2 && currentLine.includes(movedPieceIndex)) lines.push([...currentLine]);
+                                currentLine = [playerPieces[i]];
+                            }
+                        }
+                        if (currentLine.length >= 2 && currentLine.includes(movedPieceIndex)) lines.push([...currentLine]);
+                    }
+                });
+                return lines;
+            }
+            isPieceProtected(pieces, index, playerType, attackDirection) {
+                const row = Math.floor(index / 4), col = index % 4;
+                const directions = [{dr:-1,dc:0},{dr:1,dc:0},{dr:0,dc:-1},{dr:0,dc:1}];
+                for (const dir of directions) {
+                    if ((attackDirection === this.directions.horizontal && dir.dc === 0) || (attackDirection === this.directions.vertical && dir.dr === 0)) continue;
+                    const adjRow = row + dir.dr, adjCol = col + dir.dc;
+                    if (adjRow >= 0 && adjRow < 6 && adjCol >= 0 && adjCol < 4) {
+                        const adjIndex = adjRow * 4 + adjCol;
+                        if (pieces.find(p => p.index === adjIndex)?.type === playerType) return true;
+                    }
+                }
+                return false;
+            }
+            checkKillablePieces(pieces, line, playerType) {
+                if (line.length < 2) return [];
+                const killablePieces = [];
+                const opponentType = playerType === 'black' ? 'white' : 'black';
+                const direction = this.getDirection(line[0], line[1]);
+                if (!direction) return [];
+                const chainEnd1 = line[0], chainEnd2 = line[line.length - 1];
+                let dir1, dir2;
+                if (direction === this.directions.horizontal) {
+                    dir1 = { dr: 0, dc: -1 }; dir2 = { dr: 0, dc: 1 };
+                } else {
+                    dir1 = { dr: -1, dc: 0 }; dir2 = { dr: 1, dc: 0 };
+                }
+                const capture1 = this.checkEndOfChainForCapture(pieces, chainEnd1, dir1, opponentType);
+                if (capture1 !== null) killablePieces.push(capture1);
+                const capture2 = this.checkEndOfChainForCapture(pieces, chainEnd2, dir2, opponentType);
+                if (capture2 !== null && !killablePieces.includes(capture2)) killablePieces.push(capture2);
+                return killablePieces;
+            }
+            checkEndOfChainForCapture(pieces, chainEndIndex, direction, opponentType) {
+                const row = Math.floor(chainEndIndex / 4), col = chainEndIndex % 4;
+                const victimRow = row + direction.dr, victimCol = col + direction.dc;
+                if (victimRow >= 0 && victimRow < 6 && victimCol >= 0 && victimCol < 4) {
+                    const victimIndex = victimRow * 4 + victimCol;
+                    if (pieces.find(p => p.index === victimIndex)?.type === opponentType) {
+                        const behindVictimRow = victimRow + direction.dr, behindVictimCol = victimCol + direction.dc;
+                        const isBehindOffBoard = behindVictimRow < 0 || behindVictimRow >= 6 || behindVictimCol < 0 || behindVictimCol >= 4;
+                        let isBehindEmpty = false;
+                        if (!isBehindOffBoard) {
+                            const behindIndex = behindVictimRow * 4 + behindVictimCol;
+                            isBehindEmpty = !pieces.find(p => p.index === behindIndex && p.type !== null);
+                        }
+                        if ((isBehindOffBoard || isBehindEmpty) && !this.isPieceProtected(pieces, victimIndex, opponentType, this.getDirection(chainEndIndex, victimIndex))) {
+                            return victimIndex;
+                        }
+                    }
+                }
+                return null;
+            }
+        }
+
+        //-----------------------------------------
+        // 3. 棋子管理器 (移植自 PieceManager.js)
+        //-----------------------------------------
+        class PieceManager {
+            constructor() {
+                this.pieces = Array(24).fill().map((_, index) => ({
+                    index,
+                    type: this.getInitialPieceType(index),
+                    opacity: 1
+                }));
+                this.killedPieces = [];
+            }
+            getInitialPieceType(index) {
+                return [0,1,2,3,4,7].includes(index) ? 'black' : 
+                       [16,19,20,21,22,23].includes(index) ? 'white' : null;
+            }
+            getPiece(index) { return this.pieces[index]; }
+            getState() { return this.pieces.map(p => ({...p})); }
+            movePiece(fromIndex, toIndex) {
+                const piece = this.pieces[fromIndex];
+                if (!piece || piece.type === null) return false;
+                this.pieces[toIndex] = { ...piece, index: toIndex };
+                this.pieces[fromIndex] = { index: fromIndex, type: null, opacity: 1 };
+                return true;
+            }
+            killPiece(index) {
+                const piece = this.pieces[index];
+                if (!piece || piece.type === null) return false;
+                this.killedPieces.push({ ...piece, time: Date.now() });
+                piece.type = null;
+                return true;
+            }
+            updateKilledPieces() { return false; } // H5版简化，暂时不处理消失动画
+            checkWinCondition() {
+                const blackCount = this.pieces.filter(p => p.type === 'black').length;
+                const whiteCount = this.pieces.filter(p => p.type === 'white').length;
+                if (blackCount <= 1) return 'white';
+                if (whiteCount <= 1) return 'black';
+                return null;
+            }
+        }
+
+        //-----------------------------------------
+        // 4. AI 管理器 (移植自 AIManager.js)
+        //-----------------------------------------
+        class AIManager {
+            constructor(boardStateManager, pieceManager) {
+                this.boardState = boardStateManager;
+                this.pieces = pieceManager;
+                this.aiColor = 'black';
+                this.playerColor = 'white';
+                this.positionValues = [3,4,4,3, 2,5,5,2, 2,5,5,2, 2,5,5,2, 2,5,5,2, 3,4,4,3];
+            }
+            makeMove(callback) {
+                const bestMove = this.calculateBestMove();
+                setTimeout(() => {
+                    if (bestMove) {
+                        callback(bestMove.fromIndex, bestMove.toIndex);
+                    } else {
+                        callback(null, null);
+                    }
+                }, 800);
+            }
+            calculateBestMove() {
+                const possibleMoves = this.getAllPossibleMoves(this.aiColor);
+                if (possibleMoves.length === 0) return null;
+                let bestScore = -Infinity;
+                let bestMoves = [];
+
+                for (const move of possibleMoves) {
+                    const { tempBoard, captures } = this.simulateMove(move);
+                    let score = this.evaluateMove(tempBoard, move, captures);
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestMoves = [move];
+                    } else if (score === bestScore) {
+                        bestMoves.push(move);
+                    }
+                }
+                return bestMoves.length > 0 ? bestMoves[Math.floor(Math.random() * bestMoves.length)] : null;
+            }
+            evaluateMove(board, move, captures) {
+                let score = 0;
+                score += this.positionValues[move.toIndex];
+                score += captures.length * 100; // 击杀权重
+                if (this.isMoveSuicidal(board, move.toIndex, this.aiColor, this.playerColor)) {
+                    score -= 200; // 避免自杀性移动
+                }
+                const lineFormations = this.evaluateLineFormations(board, move.toIndex, this.aiColor);
+                score += lineFormations * 10;
+                if (this.createsThreat(board, move.toIndex, this.aiColor, this.playerColor)) {
+                    score += 50;
+                }
+                return score;
+            }
+            simulateMove(move) {
+                let tempBoard = this.pieces.getState();
+                const movingPiece = tempBoard.find(p => p.index === move.fromIndex);
+                const targetCell = tempBoard.find(p => p.index === move.toIndex);
+                targetCell.type = movingPiece.type;
+                movingPiece.type = null;
+                const lines = this.boardState.findLineFormation(tempBoard, move.toIndex, this.aiColor);
+                let captures = [];
+                lines.forEach(line => {
+                    const killable = this.boardState.checkKillablePieces(tempBoard, line, this.aiColor);
+                    killable.forEach(k => {
+                        if (!captures.includes(k)) captures.push(k);
+                    });
+                });
+                captures.forEach(idx => tempBoard.find(p => p.index === idx).type = null);
+                return { tempBoard, captures };
+            }
+            getAllPossibleMoves(playerType) {
+                const allMoves = [];
+                const currentPieces = this.pieces.getState();
+                currentPieces.filter(p => p.type === playerType).forEach(piece => {
+                    const adjacent = this.boardState.adjacencyMap[piece.index] || [];
+                    adjacent.forEach(toIndex => {
+                        if (!currentPieces.find(p => p.index === toIndex)?.type) {
+                            allMoves.push({ fromIndex: piece.index, toIndex });
+                        }
+                    });
+                });
+                return allMoves;
+            }
+             isMoveSuicidal(board, movedToIndex, myColor, opponentColor) {
+                // 模拟对手移动反击
+                const opponentMoves = this.getAllPossibleMovesOnBoard(board, opponentColor);
+                for (const oppMove of opponentMoves) {
+                    let testBoard = JSON.parse(JSON.stringify(board)); // 深拷贝
+                    const movingPiece = testBoard.find(p => p.index === oppMove.fromIndex);
+                    const targetCell = testBoard.find(p => p.index === oppMove.toIndex);
+                    targetCell.type = movingPiece.type;
+                    movingPiece.type = null;
+                    const lines = this.boardState.findLineFormation(testBoard, oppMove.toIndex, opponentColor);
+                    for(const line of lines){
+                         const killable = this.boardState.checkKillablePieces(testBoard, line, opponentColor);
+                         if(killable.includes(movedToIndex)) return true; // 移动后会被击杀
+                    }
+                }
+                return false;
+            }
+            getAllPossibleMovesOnBoard(board, playerType) {
+                 const allMoves = [];
+                 board.filter(p => p.type === playerType).forEach(piece => {
+                    const adjacent = this.boardState.adjacencyMap[piece.index] || [];
+                    adjacent.forEach(toIndex => {
+                        if (!board.find(p => p.index === toIndex)?.type) {
+                            allMoves.push({ fromIndex: piece.index, toIndex });
+                        }
+                    });
+                });
+                return allMoves;
+            }
+            evaluateLineFormations(board, moveIndex, playerType) { /* ... */ return 0; }
+            createsThreat(board, movedToIndex, myColor, opponentColor){ /* ... */ return false; }
+        }
+
+        //-----------------------------------------
+        // 5. 游戏逻辑管理器 (移植自 GameLogicManager.js)
+        //-----------------------------------------
+        class GameLogicManager {
+            constructor(boardStateManager, pieceManager) {
+                this.boardState = boardStateManager;
+                this.pieces = pieceManager;
+                this.aiManager = new AIManager(boardStateManager, pieceManager);
+                this.reset();
+            }
+            reset() {
+                this.currentPlayer = 'black';
+                this.selectedPiece = null;
+                this.mode = 'ai';
+                this.gamePhase = 'ready';
+                this.attackingPlayer = null;
+                this.winner = null;
+                this.isAiThinking = false;
+                this.modal = { visible: false, type: null };
+                this.remainingTime = GameConfig.timer.initialTime;
+                if (this.timerInterval) clearInterval(this.timerInterval);
+                this.timerInterval = null;
+            }
+            toggleMode() { if(this.gamePhase === 'ready') this.mode = this.mode === 'ai' ? 'pvp' : 'ai'; }
+            getGameState() {
+                return {
+                    board: this.boardState.getState(), pieces: this.pieces.getState(),
+                    mode: this.mode, gamePhase: this.gamePhase, attackingPlayer: this.attackingPlayer,
+                    winner: this.winner, modal: this.modal, remainingTime: this.remainingTime
+                };
+            }
+            startGame() {
+                if (this.gamePhase === 'ready') {
+                    this.gamePhase = 'playing';
+                    this.attackingPlayer = Math.random() < 0.5 ? 'black' : 'white';
+                    this.currentPlayer = this.attackingPlayer;
+                    if (this.mode === 'ai') {
+                        // AI对战模式下，AI(黑方)固定先手
+                        this.attackingPlayer = 'black'; 
+                        this.currentPlayer = 'black';
+                        this.triggerAIMove();
+                    }
+                    this.startTimer();
+                }
+            }
+            restartGame() {
+                this.pieces = new PieceManager();
+                this.aiManager = new AIManager(this.boardState, this.pieces);
+                this.reset();
+                this.boardState.resetHighlight();
+                this.boardState.state.cells.forEach(c => this.boardState.updateCell(c.index, {isSelected: false}));
+            }
+            selectCell(index) {
+                if (this.gamePhase !== 'playing' || this.isAiThinking) return;
+                if (this.mode === 'ai' && this.currentPlayer === 'black') return;
+                const piece = this.pieces.getPiece(index);
+                if (this.selectedPiece !== null) {
+                    this.boardState.updateCell(this.selectedPiece, { isSelected: false });
+                    if (this.boardState.state.highlightedCells.includes(index)) {
+                        this.movePiece(this.selectedPiece, index);
+                        this.switchPlayer();
+                    }
+                    this.selectedPiece = null;
+                    this.boardState.resetHighlight();
+                } else if (piece && piece.type === this.currentPlayer) {
+                    this.selectedPiece = index;
+                    this.boardState.updateCell(index, { isSelected: true });
+                    const adjacent = this.boardState.adjacencyMap[index] || [];
+                    const emptyCells = adjacent.filter(i => !this.pieces.getPiece(i)?.type);
+                    emptyCells.forEach(i => {
+                        this.boardState.updateCell(i, { isHighlighted: true });
+                        this.boardState.state.highlightedCells.push(i);
+                    });
+                }
+            }
+            movePiece(from, to) {
+                this.pieces.movePiece(from, to);
+                const lines = this.boardState.findLineFormation(this.pieces.getState(), to, this.currentPlayer);
+                lines.forEach(line => {
+                    const killable = this.boardState.checkKillablePieces(this.pieces.getState(), line, this.currentPlayer);
+                    killable.forEach(idx => this.pieces.killPiece(idx));
+                });
+                this.checkGameOver();
+            }
+            switchPlayer() {
+                this.currentPlayer = this.currentPlayer === 'black' ? 'white' : 'black';
+                this.attackingPlayer = this.currentPlayer;
+                this.remainingTime = GameConfig.timer.initialTime;
+                if (this.mode === 'ai' && this.currentPlayer === 'black' && this.gamePhase === 'playing') {
+                    this.triggerAIMove();
+                }
+            }
+            checkGameOver() {
+                this.winner = this.pieces.checkWinCondition();
+                if (this.winner) {
+                    this.gamePhase = 'gameOver';
+                    this.stopTimer();
+                }
+            }
+            triggerAIMove() {
+                this.isAiThinking = true;
+                this.aiManager.makeMove((from, to) => {
+                    if (from !== null && to !== null) {
+                        this.movePiece(from, to);
+                        this.switchPlayer();
+                    }
+                    this.isAiThinking = false;
+                });
+            }
+            startTimer() {
+                this.stopTimer();
+                this.timerInterval = setInterval(() => {
+                    if (this.gamePhase !== 'playing') {
+                        this.stopTimer();
+                        return;
+                    }
+                    this.remainingTime--;
+                    if (this.remainingTime <= 0) {
+                        this.winner = this.currentPlayer === 'black' ? 'white' : 'black';
+                        this.gamePhase = 'gameOver';
+                        this.stopTimer();
+                    }
+                }, 1000);
+            }
+            stopTimer() {
+                if (this.timerInterval) clearInterval(this.timerInterval);
+                this.timerInterval = null;
+            }
+        }
+        
+        //-----------------------------------------
+        // 6. UI 管理器 (移植自 UIManager.js)
+        //-----------------------------------------
+        class UIManager {
+            constructor(canvas, ctx, images) {
+                this.canvas = canvas;
+                this.ctx = ctx;
+                this.images = images;
+                this.config = GameConfig;
+                this.scaleFactor = 1;
+                this.boardTop = 160; // 从220调整为160，棋盘上移
+                this.DESIGN_WIDTH = 375; // UI设计基准宽度
+            }
+
+            resize(width, height) {
+                this.canvas.width = width;
+                this.canvas.height = height;
+                // 整体UI缩小，从1.0调整为0.85
+                this.scaleFactor = (width / this.DESIGN_WIDTH) * 0.85; 
+                this.boardTop = this.s(160); // 根据缩放比例调整boardTop
+            }
+            
+            s(value) { return value * this.scaleFactor; }
+
+            drawRoundRect(x, y, width, height, radius) {
+                this.ctx.beginPath();
+                this.ctx.moveTo(x + radius, y);
+                this.ctx.arcTo(x + width, y, x + width, y + height, radius);
+                this.ctx.arcTo(x + width, y + height, x, y + height, radius);
+                this.ctx.arcTo(x, y + height, x, y, radius);
+                this.ctx.arcTo(x, y, x + width, y, radius);
+                this.ctx.closePath();
+            }
+
+            render(gameState) {
+                const { width, height } = this.canvas;
+                this.ctx.clearRect(0, 0, width, height);
+                this.ctx.fillStyle = '#C48655';
+                this.ctx.fillRect(0, 0, width, height);
+
+                // 标题上移
+                this.ctx.fillStyle = '#FFFFFF';
+                this.ctx.font = `bold ${this.s(32)}px 'PingFang SC', sans-serif`; // 字体从36px调整为32px
+                this.ctx.textAlign = 'center';
+                this.ctx.fillText('棋连杀阵', width / 2, this.s(50)); // 从80调整为50
+
+                this.drawModeSelector(gameState);
+                this.drawStatus(gameState);
+                this.drawChessBoard(gameState);
+                
+                if (!gameState.modal?.visible && gameState.gamePhase !== 'gameOver') {
+                    this.drawButtons(gameState);
+                }
+
+                if (gameState.gamePhase === 'gameOver' && gameState.winner) {
+                    this.drawGameOverModal(gameState.winner);
+                }
+                if (gameState.modal?.visible && gameState.modal.type === 'rules') {
+                    this.drawRulesModal();
+                }
+            }
+
+            drawModeSelector(gameState) {
+                const { width } = this.canvas;
+                // 模式切换控件上移
+                this.ctx.fillStyle = '#704726';
+                this.drawRoundRect(width / 2 - this.s(93), this.s(85), this.s(187), this.s(44), this.s(22)); // 从124调整为85
+                this.ctx.fill();
+                this.ctx.fillStyle = '#EFBB7F';
+                if (gameState.mode === 'ai') {
+                    this.drawRoundRect(width / 2 - this.s(90), this.s(88), this.s(90), this.s(38), this.s(19)); // 从127调整为88
+                } else {
+                    this.drawRoundRect(width / 2 + this.s(3), this.s(88), this.s(88), this.s(38), this.s(19)); // 从127调整为88
+                }
+                this.ctx.fill();
+                this.ctx.font = `bold ${this.s(16)}px 'PingFang SC', sans-serif`;
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.fillStyle = gameState.mode === 'ai' ? '#FFFFFF' : 'rgba(255, 255, 255, 0.5)';
+                this.ctx.fillText('AI对战', width / 2 - this.s(45), this.s(110)); // 从149调整为110
+                this.ctx.fillStyle = gameState.mode === 'ai' ? 'rgba(255, 255, 255, 0.5)' : '#FFFFFF';
+                this.ctx.fillText('双人对战', width / 2 + this.s(47), this.s(110)); // 从149调整为110
+            }
+
+            drawStatus(gameState) {
+                const { width } = this.canvas;
+                const statusY = this.s(140); // 从200调整为140，状态信息上移
+                
+                if (gameState.gamePhase === 'playing') {
+                    const isBlack = gameState.attackingPlayer === 'black';
+                    const pieceImg = isBlack ? this.images.blackPiece : this.images.whitePiece;
+                    let statusText = '当前行棋方：';
+                    if (gameState.mode === 'ai') {
+                        statusText += isBlack ? '黑方 (AI) 思考中...' : '白方 (你)';
+                    } else {
+                        statusText += isBlack ? '黑方' : '白方';
+                    }
+                    
+                    this.ctx.font = `bold ${this.s(16)}px 'PingFang SC', sans-serif`;
+                    this.ctx.textAlign = 'left'; // 改为左对齐以精确控制位置
+                    this.ctx.textBaseline = 'middle';
+                    this.ctx.fillStyle = isBlack ? '#000000' : '#FFFFFF';
+                    
+                    const textWidth = this.ctx.measureText(statusText).width;
+                    const pieceSize = this.s(24);
+                    const totalWidth = textWidth + pieceSize + this.s(5); // 文本 + 间距 + 图标
+                    const textStartX = (width - totalWidth) / 2;
+                    
+                    this.ctx.fillText(statusText, textStartX, statusY);
+                    
+                    const pieceX = textStartX + textWidth + this.s(5);
+                    const pieceY = statusY - pieceSize / 2;
+                    this.ctx.drawImage(pieceImg, pieceX, pieceY, pieceSize, pieceSize);
+
+                    // 倒计时
+                    const timerConfig = this.config.timer;
+                    this.ctx.fillStyle = gameState.remainingTime <= timerConfig.warningThreshold ? timerConfig.colors.warning : timerConfig.colors.normal;
+                    this.ctx.font = `${this.s(timerConfig.fontSize)}px Arial`;
+                    this.ctx.textAlign = 'right';
+                    this.ctx.fillText(`${gameState.remainingTime}s`, width - this.s(20), this.s(40));
+                } else {
+                    this.ctx.font = ` ${this.s(14)}px 'PingFang SC', sans-serif`;
+                    this.ctx.textAlign = 'center';
+                    this.ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                    this.ctx.fillText('移动棋子形成连线，击杀对方未保护的棋子', width / 2, statusY);
+                }
+            }
+
+            drawChessBoard(gameState) {
+                const { width } = this.canvas;
+                const b = this.config.board;
+                const boardWidth = this.s(b.width), boardHeight = this.s(b.height);
+                const cellSize = this.s(b.cellSize), gap = this.s(b.gap), radius = this.s(b.radius);
+                const left = (width - boardWidth) / 2;
+                const top = this.boardTop;
+
+                this.ctx.fillStyle = b.colors.background;
+                this.drawRoundRect(left, top, boardWidth, boardHeight, this.s(6));
+                this.ctx.fill();
+
+                gameState.board.cells.forEach((cell, i) => {
+                    const row = Math.floor(i / 4), col = i % 4;
+                    const x = left + col * (cellSize + gap) + gap;
+                    const y = top + row * (cellSize + gap) + gap;
+
+                    this.ctx.fillStyle = cell.isHighlighted ? b.colors.cellHighlighted : cell.isSelected ? b.colors.cellSelected : b.colors.cellNormal;
+                    this.drawRoundRect(x, y, cellSize, cellSize, radius);
+                    this.ctx.fill();
+
+                    const piece = gameState.pieces.find(p => p.index === i);
+                    if (piece && piece.type) {
+                        const pieceImg = piece.type === 'black' ? this.images.blackPiece : this.images.whitePiece;
+                        this.ctx.drawImage(pieceImg, x, y, cellSize, cellSize);
+                    }
+                });
+            }
+            
+            drawButtons(gameState) {
+                const { width, height } = this.canvas;
+                const btnWidth = this.s(112), btnHeight = this.s(50), btnY = height - this.s(80);
+                
+                // 玩法按钮
+                this.ctx.fillStyle = '#F69C5C';
+                this.drawRoundRect(width / 2 - this.s(128), btnY, btnWidth, btnHeight, this.s(15));
+                this.ctx.fill();
+                this.ctx.fillStyle = '#FFFFFF';
+                this.ctx.font = `bold ${this.s(18)}px 'PingFang SC', sans-serif`;
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.fillText('玩法', width / 2 - this.s(72), btnY + btnHeight / 2);
+
+                // 开始/重新游戏按钮
+                this.ctx.fillStyle = '#22C55F';
+                this.drawRoundRect(width / 2 + this.s(16), btnY, btnWidth, btnHeight, this.s(15));
+                this.ctx.fill();
+                this.ctx.fillStyle = '#FFFFFF';
+                const buttonText = gameState.gamePhase === 'playing' ? '重新游戏' : '开始游戏';
+                this.ctx.fillText(buttonText, width / 2 + this.s(72), btnY + btnHeight / 2);
+            }
+
+            drawGameOverModal(winner) {
+                const { width, height } = this.canvas;
+                this.ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+                this.ctx.fillRect(0, 0, width, height);
+
+                const modalWidth = this.s(300), modalHeight = this.s(200);
+                const x = (width - modalWidth) / 2, y = (height - modalHeight) / 2;
+                
+                this.ctx.fillStyle = '#EFBB7F';
+                this.drawRoundRect(x, y, modalWidth, modalHeight, this.s(10));
+                this.ctx.fill();
+                this.ctx.strokeStyle = '#704726';
+                this.ctx.lineWidth = this.s(3);
+                this.drawRoundRect(x, y, modalWidth, modalHeight, this.s(10)); // Stroke needs path too
+                this.ctx.stroke();
+
+                this.ctx.fillStyle = '#704726';
+                this.ctx.font = `bold ${this.s(24)}px 'PingFang SC', sans-serif`;
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.fillText('游戏结束', width / 2, y + this.s(40));
+
+                const winnerText = winner === 'black' ? '黑方胜出' : '白方胜出';
+                this.ctx.font = `bold ${this.s(20)}px 'PingFang SC', sans-serif`;
+                this.ctx.fillText(winnerText, width / 2, y + this.s(85));
+
+                const btnWidth = this.s(150), btnHeight = this.s(50);
+                const btnX = (width - btnWidth)/2, btnY = y + this.s(120);
+                this.ctx.fillStyle = '#22C55F';
+                this.drawRoundRect(btnX, btnY, btnWidth, btnHeight, this.s(8));
+                this.ctx.fill();
+                this.ctx.fillStyle = '#FFFFFF';
+                this.ctx.font = `bold ${this.s(18)}px 'PingFang SC', sans-serif`;
+                this.ctx.fillText('再来一局', width / 2, btnY + btnHeight / 2);
+            }
+            
+            drawRulesModal() {
+                 const { width, height } = this.canvas;
+                this.ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+                this.ctx.fillRect(0, 0, width, height);
+
+                const modalWidth = this.s(340), modalHeight = this.s(470);
+                const modalX = (width - modalWidth) / 2, modalY = (height - modalHeight) / 2;
+                
+                this.ctx.fillStyle = '#EFBB7F';
+                this.drawRoundRect(modalX, modalY, modalWidth, modalHeight, this.s(10));
+                this.ctx.fill();
+                this.ctx.strokeStyle = '#704726';
+                this.ctx.lineWidth = this.s(3);
+                this.drawRoundRect(modalX, modalY, modalWidth, modalHeight, this.s(10));
+                this.ctx.stroke();
+
+                this.ctx.fillStyle = '#704726';
+                this.ctx.font = `bold ${this.s(24)}px 'PingFang SC', sans-serif`;
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.fillText('玩法规则', width / 2, modalY + this.s(45));
+
+                this.ctx.font = `${this.s(16)}px 'PingFang SC', sans-serif`;
+                this.ctx.textAlign = 'left';
+                this.ctx.textBaseline = 'top';
+                let startY = modalY + this.s(90);
+                const lineHeight = this.s(24);
+                this.config.rules.forEach(rule => {
+                    // Manual word wrapping for long rules
+                    const lines = this.getWrappedText(rule, modalWidth - this.s(30));
+                    lines.forEach(line => {
+                        this.ctx.fillText(line, modalX + this.s(15), startY);
+                        startY += lineHeight;
+                    });
+                });
+
+                // 开发者信息
+                this.ctx.font = `${this.s(14)}px 'PingFang SC', sans-serif`;
+                this.ctx.textAlign = 'left';
+                startY += this.s(15);
+                this.ctx.fillText('开发者：惠荣VS0769', modalX + this.s(15), startY);
+                startY += this.s(20);
+                this.ctx.fillText('联系方式：DDZDDM0430', modalX + this.s(15), startY);
+                
+                const btnWidth = this.s(150), btnHeight = this.s(50);
+                const btnX = modalX + (modalWidth - btnWidth) / 2;
+                const btnY = modalY + modalHeight - this.s(80);
+                this.ctx.fillStyle = '#22C55F';
+                this.drawRoundRect(btnX, btnY, btnWidth, btnHeight, this.s(8));
+                this.ctx.fill();
+                this.ctx.fillStyle = '#FFFFFF';
+                this.ctx.font = `bold ${this.s(18)}px 'PingFang SC', sans-serif`;
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.fillText('关闭弹窗', width/2, btnY + btnHeight / 2);
+            }
+            
+            getWrappedText(text, maxWidth) {
+                const words = text.split('');
+                let lines = [];
+                let currentLine = words[0];
+
+                for (let i = 1; i < words.length; i++) {
+                    const word = words[i];
+                    const width = this.ctx.measureText(currentLine + word).width;
+                    if (width < maxWidth) {
+                        currentLine += word;
+                    } else {
+                        lines.push(currentLine);
+                        currentLine = word;
+                    }
+                }
+                lines.push(currentLine);
+                return lines;
+            }
+        }
+
+        //-----------------------------------------
+        // 7. 事件处理器 (移植自 EventHandler.js)
+        //-----------------------------------------
+        class EventHandler {
+            constructor(canvas, gameLogicManager, uiManager) {
+                this.canvas = canvas;
+                this.gameLogic = gameLogicManager;
+                this.uiManager = uiManager;
+                this.initEvents();
+            }
+
+            initEvents() {
+                this.canvas.addEventListener('click', (e) => this.handleEvent(e));
+                this.canvas.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    this.handleEvent(e.touches[0]);
+                }, { passive: false });
+            }
+
+            handleEvent(e) {
+                const rect = this.canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                const { width, height } = this.canvas;
+                const s = this.uiManager.s.bind(this.uiManager);
+
+                const gameState = this.gameLogic.getGameState();
+
+                // 规则弹窗关闭按钮
+                if (gameState.modal?.visible && gameState.modal.type === 'rules') {
+                    const modalWidth = s(340), modalHeight = s(470);
+                    const modalX = (width - modalWidth) / 2, modalY = (height - modalHeight) / 2;
+                    const btnWidth = s(150), btnHeight = s(50);
+                    const btnX = modalX + (modalWidth - btnWidth) / 2;
+                    const btnY = modalY + modalHeight - s(80);
+                    if (x > btnX && x < btnX + btnWidth && y > btnY && y < btnY + btnHeight) {
+                        this.gameLogic.modal.visible = false;
+                        return;
+                    }
+                    return;
+                }
+                
+                // 游戏结束弹窗"再来一局"按钮
+                if (gameState.gamePhase === 'gameOver') {
+                    const modalWidth = s(300), modalHeight = s(200);
+                    const modalX = (width - modalWidth) / 2, modalY = (height - modalHeight) / 2;
+                    const btnWidth = s(150), btnHeight = s(50);
+                    const btnX = (width - btnWidth)/2, btnY = modalY + s(120);
+                    if (x > btnX && x < btnX + btnWidth && y > btnY && y < btnY + btnHeight) {
+                        this.gameLogic.restartGame();
+                    }
+                    return;
+                }
+
+                // 模式切换
+                const selectorX = width / 2 - s(93);
+                const selectorWidth = s(187);
+                const selectorY = s(85); // 从124调整为85
+                const selectorHeight = s(44);
+                if (y > selectorY && y < selectorY + selectorHeight && x > selectorX && x < selectorX + selectorWidth) {
+                     this.gameLogic.toggleMode();
+                     return;
+                }
+
+                // 底部按钮
+                const btnWidth = s(112), btnHeight = s(50), btnY = height - s(80);
+                // 玩法按钮
+                if (x > width/2 - s(128) && x < width/2 - s(16) && y > btnY && y < btnY + btnHeight) {
+                    this.gameLogic.modal.type = 'rules';
+                    this.gameLogic.modal.visible = true;
+                    return;
+                }
+                // 开始/重新游戏按钮
+                if (x > width/2 + s(16) && x < width/2 + s(128) && y > btnY && y < btnY + btnHeight) {
+                    if (gameState.gamePhase === 'playing') this.gameLogic.restartGame();
+                    else this.gameLogic.startGame();
+                    return;
+                }
+
+                // 棋盘点击
+                const cellIndex = this.getCellIndex(x, y);
+                if (cellIndex !== null) {
+                    this.gameLogic.selectCell(cellIndex);
+                }
+            }
+
+            getCellIndex(x, y) {
+                const b = this.uiManager.config.board;
+                const s = this.uiManager.s.bind(this.uiManager);
+
+                const boardWidth = s(b.width), boardHeight = s(b.height);
+                const cellSize = s(b.cellSize), gap = s(b.gap);
+                const left = (this.canvas.width - boardWidth) / 2;
+                const top = this.uiManager.boardTop;
+
+                if (x < left || x > left + boardWidth || y < top || y > top + boardHeight) return null;
+                
+                const relativeX = x - left, relativeY = y - top;
+                const col = Math.floor(relativeX / (cellSize + gap));
+                const row = Math.floor(relativeY / (cellSize + gap));
+
+                const cellX = relativeX % (cellSize + gap);
+                const cellY = relativeY % (cellSize + gap);
+
+                if (cellX > cellSize || cellY > cellSize) return null;
+
+                const index = row * 4 + col;
+                return (index >= 0 && index < 24) ? index : null;
+            }
+        }
+        
+        //-----------------------------------------
+        // 8. 游戏主入口 (移植自 game.js)
+        //-----------------------------------------
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const gameContainer = document.getElementById('game-container');
+
+        // 使用离屏Canvas绘制棋子，避免加载图片
+        function createPieceImage(color) {
+            const pieceCanvas = document.createElement('canvas');
+            const pieceCtx = pieceCanvas.getContext('2d');
+            const size = 100;
+            pieceCanvas.width = size;
+            pieceCanvas.height = size;
+
+            const gradient = pieceCtx.createRadialGradient(size*0.4, size*0.4, size*0.1, size/2, size/2, size/2);
+            if (color === 'black') {
+                gradient.addColorStop(0, '#666');
+                gradient.addColorStop(1, '#111');
+                pieceCtx.shadowColor = 'rgba(0,0,0,0.5)';
+            } else {
+                gradient.addColorStop(0, '#fff');
+                gradient.addColorStop(1, '#ccc');
+                pieceCtx.shadowColor = 'rgba(0,0,0,0.3)';
+            }
+            
+            pieceCtx.shadowBlur = 5;
+            pieceCtx.shadowOffsetX = 2;
+            pieceCtx.shadowOffsetY = 2;
+
+            pieceCtx.beginPath();
+            pieceCtx.arc(size/2, size/2, size/2 - 4, 0, Math.PI * 2);
+            pieceCtx.fillStyle = gradient;
+            pieceCtx.fill();
+
+            return pieceCanvas;
+        }
+
+        const images = {
+            blackPiece: createPieceImage('black'),
+            whitePiece: createPieceImage('white'),
+        };
+
+        const boardStateManager = new BoardStateManager();
+        const pieceManager = new PieceManager();
+        const gameLogic = new GameLogicManager(boardStateManager, pieceManager);
+        const uiManager = new UIManager(canvas, ctx, images);
+        new EventHandler(canvas, gameLogic, uiManager);
+
+        function resizeGame() {
+            const containerWidth = gameContainer.clientWidth;
+            const containerHeight = gameContainer.clientHeight;
+            uiManager.resize(containerWidth, containerHeight);
+        }
+
+        function mainLoop() {
+            uiManager.render(gameLogic.getGameState());
+            requestAnimationFrame(mainLoop);
+        }
+
+        window.addEventListener('resize', resizeGame);
+        
+        // 初始化并开始游戏
+        resizeGame();
+        mainLoop();
+
+    </script>
+</body>
+</html>
+
